@@ -101,7 +101,7 @@ export const detectMLAnomaly = async ({ userId, tokenHash, ipAddress, userAgent 
       tokenHash,
       type: "BEHAVIOR_ANOMALY",
       severity: "CRITICAL",
-      reason: `Isolation Forest: highly anomalous request profile (features: reqRate=${vector?.[0]}, endpoints=${vector?.[1]}, hour=${vector?.[2]}, ipChange=${vector?.[3]}, uaChange=${vector?.[4]}, tokenAgeMin=${vector?.[5]?.toFixed(0)})`,
+      reason: `Isolation Forest: highly anomalous request profile (features: reqRate=${vector?.[0]}, endpoints=${vector?.[1]}, hourSin=${vector?.[2]?.toFixed(2)}, hourCos=${vector?.[3]?.toFixed(2)}, ipUnknown=${vector?.[4]}, uaChange=${vector?.[5]}, tokenAgeMin=${vector?.[6]?.toFixed(0)})`,
       mlScore: score,
     });
   } else if (score >= 0.72) {

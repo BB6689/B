@@ -13,9 +13,21 @@
  *
  * How it works here:
  * ─────────────────
- * Every request is converted to a numeric feature vector:
- *   [ requestsPerMin, uniqueEndpointsPerMin, hourOfDay,
- *     ipChangeFlag, uaChangeFlag, tokenAgeMinutes ]
+ * Every request is converted to a 7-feature numeric vector:
+ *   [0] requestsPerMin        — volume signal
+ *   [1] uniqueEndpointsPerMin  — API scanning signal
+ *   [2] hourSin               — sin(2π·hour/24), circular time encoding
+ *   [3] hourCos               — cos(2π·hour/24), circular time encoding
+ *   [4] ipUnknownFlag          — 1 if IP not in user's baseline knownIPs
+ *   [5] uaChangeFlag           — 1 if User-Agent differs from previous log
+ *   [6] tokenAgeMinutes        — how old is this token (0–720 capped)
+ *
+ * Fixes vs prior version:
+ *   #3 Fisher-Yates shuffle  — replaces biased sort() subsample
+ *   #4 Circular hour encoding — sin/cos eliminates 23→0 discontinuity
+ *   #5 IP unknown flag        — checks user baseline, not just prev-log diff
+ *   #8 Min-max normalization  — computed from training batch, applied to
+ *      every scoring call so high-variance features don't dominate splits
  *
  * The forest is built lazily from the first N=256 samples, then
  * re-trains every 500 requests. Anomaly scores (0–1) feed the
@@ -29,9 +41,12 @@
 
 import RequestLog from "../models/RequestLog.js";
 import { normalizeIp } from "./ipUtils.js";
+import { getUserBaseline } from "./userBehavior.js";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+
+const TWO_PI = 2 * Math.PI;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FOREST_PERSIST_PATH = path.join(__dirname, "..", "..", "data", "forest-state.json");
@@ -98,10 +113,12 @@ function averagePathLength(n) {
 
 class IsolationForest {
   constructor({ numTrees = 50, sampleSize = 256 } = {}) {
-    this.numTrees   = numTrees;
-    this.sampleSize = sampleSize;
-    this.trees      = [];
-    this.trained    = false;
+    this.numTrees    = numTrees;
+    this.sampleSize  = sampleSize;
+    this.trees       = [];
+    this.trained     = false;
+    this.featureMins = null;  // per-feature training mins — used for live normalization
+    this.featureMaxs = null;  // per-feature training maxs
   }
 
   /**
@@ -115,15 +132,14 @@ class IsolationForest {
     const n = Math.min(data.length, this.sampleSize);
 
     for (let i = 0; i < this.numTrees; i++) {
-      // Random subsample without replacement
-      const shuffled = [...data].sort(() => Math.random() - 0.5);
-      const sample   = shuffled.slice(0, n);
+      // Fisher-Yates uniform shuffle — unbiased, O(n). Replaces biased sort() (#3)
+      const sample = fisherYates(data).slice(0, n);
       this.trees.push(new IsolationTree(sample));
     }
 
     this.sampleSize_actual = n;
     this.trained = true;
-    console.log(`🌲 Isolation Forest trained on ${n} samples with ${this.numTrees} trees`);
+    console.log(`�� Isolation Forest trained on ${n} samples with ${this.numTrees} trees`);
   }
 
   /**
@@ -148,6 +164,62 @@ class IsolationForest {
 }
 
 /* ─────────────────────────────────────────────────────────────
+   HELPERS
+───────────────────────────────────────────────────────────── */
+
+/**
+ * Fisher-Yates uniform shuffle — O(n), unbiased (#3).
+ * Replaces the biased Array.sort(() => Math.random() - 0.5) pattern.
+ */
+function fisherYates(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/**
+ * Compute per-feature min-max normalization params from a batch of training
+ * vectors, and return both the normalized vectors and the params (#8).
+ *
+ * Without this, requestsPerMin (0–1000+) would dominate split selection
+ * over binary flags like ipUnknownFlag (0 or 1), reducing their influence.
+ */
+function computeNormParams(vectors) {
+  const numFeatures = vectors[0].length;
+  const mins = new Array(numFeatures).fill(Infinity);
+  const maxs = new Array(numFeatures).fill(-Infinity);
+
+  for (const v of vectors) {
+    for (let i = 0; i < numFeatures; i++) {
+      if (v[i] < mins[i]) mins[i] = v[i];
+      if (v[i] > maxs[i]) maxs[i] = v[i];
+    }
+  }
+
+  const normalized = vectors.map(v =>
+    v.map((val, i) => {
+      const range = maxs[i] - mins[i];
+      return range === 0 ? 0 : (val - mins[i]) / range;
+    })
+  );
+  return { normalized, mins, maxs };
+}
+
+/**
+ * Apply pre-computed normalization to a single vector during live scoring.
+ * Clamps to [0, 1] to handle values outside the training range.
+ */
+function applyNorm(vector, mins, maxs) {
+  return vector.map((val, i) => {
+    const range = maxs[i] - mins[i];
+    return range === 0 ? 0 : Math.min(1, Math.max(0, (val - mins[i]) / range));
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────
    SINGLETON + AUTO-TRAIN LIFECYCLE
 ───────────────────────────────────────────────────────────── */
 
@@ -158,21 +230,20 @@ const RETRAIN_INTERVAL     = 500; // retrain every 500 requests
 const MIN_SAMPLES_TO_TRAIN = 50;  // don't train until we have enough data
 
 /**
- * Build the feature vector from live MongoDB logs for a given user.
+ * Build the raw (pre-normalization) 7-feature vector for live scoring.
  *
- * Features:
- *  [0] requestsPerMin       — volume signal
- *  [1] uniqueEndpointsPerMin — scanning signal
- *  [2] hourOfDay             — temporal signal (0–23)
- *  [3] ipChangeFlag          — 1 if IP differs from previous log
- *  [4] uaChangeFlag          — 1 if User-Agent differs from previous log
- *  [5] tokenAgeMinutes       — how old is this token (0–720 capped)
+ * [0] requestsPerMin        — volume signal
+ * [1] uniqueEndpointsPerMin  — scanning signal
+ * [2] hourSin               — sin(2π·hour/24), circular encoding (#4)
+ * [3] hourCos               — cos(2π·hour/24), circular encoding (#4)
+ * [4] ipUnknownFlag          — 1 if IP not in baseline knownIPs (#5)
+ * [5] uaChangeFlag           — 1 if UA differs from most recent log
+ * [6] tokenAgeMinutes        — token age capped at 720 min (12 h)
  */
 async function buildFeatureVector(userId, tokenHash, ipAddress, userAgent) {
-  const oneMinAgo  = new Date(Date.now() - 60000);
-  const fiveMinAgo = new Date(Date.now() - 300000);
+  const oneMinAgo = new Date(Date.now() - 60000);
 
-  const [recentLogs, prevLog, firstTokenLog] = await Promise.all([
+  const [recentLogs, prevLog, firstTokenLog, baseline] = await Promise.all([
     RequestLog.find({ userId, createdAt: { $gte: oneMinAgo } })
       .select("endpoint")
       .lean(),
@@ -184,14 +255,22 @@ async function buildFeatureVector(userId, tokenHash, ipAddress, userAgent) {
       .sort({ createdAt: 1 })
       .select("createdAt")
       .lean(),
+    getUserBaseline(userId),
   ]);
 
   const requestsPerMin        = recentLogs.length;
   const uniqueEndpointsPerMin = new Set(recentLogs.map(l => l.endpoint)).size;
-  const hourOfDay             = new Date().getHours();
 
-  const normalizedIp = normalizeIp(ipAddress);
-  const ipChangeFlag = prevLog && normalizeIp(prevLog.ipAddress) !== normalizedIp ? 1 : 0;
+  // Circular hour encoding — eliminates the 23→0 discontinuity (#4)
+  const hour    = new Date().getHours();
+  const hourSin = Math.sin(TWO_PI * hour / 24);
+  const hourCos = Math.cos(TWO_PI * hour / 24);
+
+  // IP unknown flag — checks established baseline, not just last-log diff (#5)
+  const normalizedIp  = normalizeIp(ipAddress);
+  const knownIPs      = baseline?.knownIPs ?? [];
+  const ipUnknownFlag = knownIPs.length > 0 && !knownIPs.includes(normalizedIp) ? 1 : 0;
+
   const uaChangeFlag = prevLog && prevLog.userAgent !== userAgent ? 1 : 0;
 
   const tokenAgeMinutes = firstTokenLog
@@ -201,17 +280,19 @@ async function buildFeatureVector(userId, tokenHash, ipAddress, userAgent) {
   return [
     requestsPerMin,
     uniqueEndpointsPerMin,
-    hourOfDay,
-    ipChangeFlag,
+    hourSin,
+    hourCos,
+    ipUnknownFlag,
     uaChangeFlag,
     tokenAgeMinutes,
   ];
 }
 
 /**
- * Fetch training data from RequestLog — O(n log n) not O(n²).
- * Pre-sorts by userId + createdAt (desc), then uses sliding window.
- * Eliminates nested loops that scanned userHistory for each log.
+ * Fetch training data from RequestLog — O(n log n), sliding window.
+ *
+ * Returns { vectors, mins, maxs } — vectors are already min-max normalized (#8).
+ * The mins/maxs are stored on the forest singleton and applied during live scoring.
  */
 async function fetchTrainingData() {
   const logs = await RequestLog.find({ userId: { $ne: null } })
@@ -222,18 +303,21 @@ async function fetchTrainingData() {
 
   if (logs.length < MIN_SAMPLES_TO_TRAIN) return null;
 
-  const vectors = [];
+  const rawVectors  = [];
   let currentUserId = null;
-  let userWindow = [];
+  let userWindow    = [];
+  const userSeenIPs = {};  // uid → Set of IPs seen in newer logs for this user (#5)
 
   for (const log of logs) {
-    const uid = String(log.userId);
+    const uid     = String(log.userId);
     const logTime = new Date(log.createdAt).getTime();
 
     if (uid !== currentUserId) {
       currentUserId = uid;
-      userWindow = [];
+      userWindow    = [];
     }
+
+    if (!userSeenIPs[uid]) userSeenIPs[uid] = new Set();
 
     userWindow.push(log);
     userWindow = userWindow.filter(
@@ -244,12 +328,21 @@ async function fetchTrainingData() {
       l => l !== log && logTime - new Date(l.createdAt).getTime() < 60000
     );
 
-    const reqPerMin     = rateWindow.length + 1;
-    const uniqueEp      = new Set([log.endpoint, ...rateWindow.map(l => l.endpoint)]).size;
-    const hour          = new Date(log.createdAt).getHours();
+    const reqPerMin = rateWindow.length + 1;
+    const uniqueEp  = new Set([log.endpoint, ...rateWindow.map(l => l.endpoint)]).size;
 
-    const prevLog = userWindow.length > 1 ? userWindow[1] : null;
-    const ipChange = prevLog && normalizeIp(prevLog.ipAddress) !== normalizeIp(log.ipAddress) ? 1 : 0;
+    // Circular hour encoding (#4)
+    const hour    = new Date(log.createdAt).getHours();
+    const hourSin = Math.sin(TWO_PI * hour / 24);
+    const hourCos = Math.cos(TWO_PI * hour / 24);
+
+    // IP unknown flag: not seen in any newer log for this user (#5)
+    const normIp        = normalizeIp(log.ipAddress);
+    const seenIPs       = userSeenIPs[uid];
+    const ipUnknownFlag = seenIPs.size > 0 && !seenIPs.has(normIp) ? 1 : 0;
+    seenIPs.add(normIp);
+
+    const prevLog  = userWindow.length > 1 ? userWindow[1] : null;
     const uaChange = prevLog && prevLog.userAgent !== log.userAgent ? 1 : 0;
 
     const firstTokenLog = userWindow
@@ -260,10 +353,11 @@ async function fetchTrainingData() {
       ? Math.min((logTime - new Date(firstTokenLog.createdAt).getTime()) / 60000, 720)
       : 0;
 
-    vectors.push([reqPerMin, uniqueEp, hour, ipChange, uaChange, tokenAgeMin]);
+    rawVectors.push([reqPerMin, uniqueEp, hourSin, hourCos, ipUnknownFlag, uaChange, tokenAgeMin]);
   }
 
-  return vectors;
+  // Compute normalization params and return normalized vectors (#8)
+  return computeNormParams(rawVectors);
 }
 
 /**
@@ -272,12 +366,14 @@ async function fetchTrainingData() {
 async function persistForest() {
   try {
     const state = {
-      numTrees: forest.numTrees,
-      sampleSize: forest.sampleSize,
+      numTrees:          forest.numTrees,
+      sampleSize:        forest.sampleSize,
       sampleSize_actual: forest.sampleSize_actual,
-      trained: forest.trained,
-      trees: forest.trees.map(t => serializeTree(t)),
-      timestamp: Date.now(),
+      trained:           forest.trained,
+      featureMins:       forest.featureMins,
+      featureMaxs:       forest.featureMaxs,
+      trees:             forest.trees.map(t => serializeTree(t)),
+      timestamp:         Date.now(),
     };
     const dir = path.dirname(FOREST_PERSIST_PATH);
     await fs.mkdir(dir, { recursive: true });
@@ -298,12 +394,14 @@ async function restoreForest() {
     const ageHours = ageMs / (1000 * 60 * 60);
 
     if (ageHours < 24 && state.trees && state.trees.length > 0) {
-      forest.numTrees = state.numTrees;
-      forest.sampleSize = state.sampleSize;
+      forest.numTrees          = state.numTrees;
+      forest.sampleSize        = state.sampleSize;
       forest.sampleSize_actual = state.sampleSize_actual;
-      forest.trained = state.trained;
-      forest.trees = state.trees.map(t => deserializeTree(t));
-      console.log(`🌲 Isolation Forest restored (age: ${ageHours.toFixed(1)}h, trees: ${forest.trees.length})`);
+      forest.trained           = state.trained;
+      forest.featureMins       = state.featureMins || null;
+      forest.featureMaxs       = state.featureMaxs || null;
+      forest.trees             = state.trees.map(t => deserializeTree(t));
+      console.log(`�� Isolation Forest restored (age: ${ageHours.toFixed(1)}h, trees: ${forest.trees.length}, normalization: ${forest.featureMins ? "yes" : "no"})`);
       return true;
     } else {
       console.log(`⚠️  Forest state too old (${ageHours.toFixed(1)}h) — will retrain`);
@@ -351,10 +449,12 @@ async function maybeRetrain() {
   if (!shouldTrain) return;
 
   try {
-    const data = await fetchTrainingData();
-    if (data && data.length >= MIN_SAMPLES_TO_TRAIN) {
-      forest.train(data);
-      await persistForest();  // 🔧 FIX #1: Save state after training
+    const result = await fetchTrainingData();
+    if (result && result.normalized.length >= MIN_SAMPLES_TO_TRAIN) {
+      forest.featureMins = result.mins;
+      forest.featureMaxs = result.maxs;
+      forest.train(result.normalized);   // trains on normalized vectors
+      await persistForest();
       requestsSinceLastTrain = 0;
     }
   } catch (err) {
@@ -380,9 +480,13 @@ export async function scoreRequest({ userId, tokenHash, ipAddress, userAgent }) 
   if (!userId) return { score: 0.5, vector: null };
 
   try {
-    const vector = await buildFeatureVector(userId, tokenHash, ipAddress, userAgent);
-    const score  = forest.score(vector);
-    return { score, vector };
+    const rawVector = await buildFeatureVector(userId, tokenHash, ipAddress, userAgent);
+    // Apply same normalization used during training (#8)
+    const scoringVector = forest.featureMins && forest.featureMaxs
+      ? applyNorm(rawVector, forest.featureMins, forest.featureMaxs)
+      : rawVector;
+    const score = forest.score(scoringVector);
+    return { score, vector: rawVector };  // return raw vector for human-readable alert reasons
   } catch (err) {
     console.error("IF scoring error:", err.message);
     return { score: 0.5, vector: null };
@@ -396,7 +500,7 @@ export async function scoreRequest({ userId, tokenHash, ipAddress, userAgent }) 
 export async function initForest() {
   const restored = await restoreForest();
   if (!restored) {
-    console.log("🌲 Forest will train on first request batch");
+    console.log("�� Forest will train on first request batch");
   }
 }
 
@@ -405,9 +509,10 @@ export async function initForest() {
  */
 export function forestStatus() {
   return {
-    trained:   forest.trained,
-    numTrees:  forest.numTrees,
-    sampleSize: forest.sampleSize_actual ?? 0,
+    trained:             forest.trained,
+    numTrees:            forest.numTrees,
+    sampleSize:          forest.sampleSize_actual ?? 0,
+    normalizationReady:  !!(forest.featureMins && forest.featureMaxs),
     requestsSinceLastTrain,
   };
 }

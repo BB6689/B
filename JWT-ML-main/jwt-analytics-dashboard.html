@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>JWT Abuse Detection – Analytics</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+:root {
+  --bg:       #eef2ff;
+  --surface:  #ffffff;
+  --surface2: #f0f0fe;
+  --border:   #dde3f8;
+  --border2:  #c7d0f5;
+  --text:     #1e1b4b;
+  --text2:    #4c4885;
+  --text3:    #8b87c0;
+
+  /* Accent – slate indigo */
+  --acc:      #4f46e5;
+  --acc-lt:   #eef2ff;
+  --acc-h:    #4338ca;
+
+  /* Semantic severity */
+  --crit:     #dc2626;
+  --crit-lt:  #fef2f2;
+  --high:     #ea580c;
+  --high-lt:  #fff7ed;
+  --med:      #ca8a04;
+  --med-lt:   #fefce8;
+  --low:      #16a34a;
+  --low-lt:   #f0fdf4;
+
+  /* Chart palette – calm, distinct, no garish oranges */
+  --c1: #4f46e5;   /* indigo */
+  --c2: #0891b2;   /* cyan   */
+  --c3: #059669;   /* emerald*/
+  --c4: #7c3aed;   /* violet */
+  --c5: #db2777;   /* pink   */
+  --c6: #d97706;   /* amber  */
+  --c7: #64748b;   /* slate  */
+  --c8: #0f766e;   /* teal   */
+
+  --r: 12px;
+  --r-sm: 7px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Geist', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── TOPBAR ─────────────────────────────────────────── */
+.topbar {
+  height: 52px;
+  background: #1e1b4b;
+  border-bottom: 1px solid #312e81;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.tb-logo {
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  background: #4f46e5;
+  color: #fff;
+  padding: 3px 8px;
+  border-radius: 5px;
+  letter-spacing: .04em;
+}
+.tb-title { font-size: 13px; font-weight: 500; color: #e0e7ff; }
+.tb-sep { width: 1px; height: 16px; background: #312e81; }
+.tb-gap { flex: 1; }
+#conn-status {
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 11px;
+  border-radius: 20px;
+  font-family: 'Geist Mono', monospace;
+}
+#conn-status.ok      { background: #064e3b; color: #6ee7b7; border: 1px solid #065f46; }
+#conn-status.err     { background: #450a0a; color: #fca5a5; border: 1px solid #7f1d1d; }
+#conn-status.loading { background: #312e81; color: #a5b4fc; border: 1px solid #4338ca; }
+
+/* ── CONFIG BANNER ──────────────────────────────────── */
+.cfg-banner {
+  background: #fefce8;
+  border-bottom: 1px solid #fef08a;
+  padding: 11px 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text2);
+  flex-wrap: wrap;
+}
+.cfg-banner strong { color: #92400e; font-weight: 500; }
+.cfg-input {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #fde68a;
+  border-radius: var(--r-sm);
+  font-family: 'Geist Mono', monospace;
+  font-size: 12px;
+  min-width: 240px;
+  background: #fff;
+  color: var(--text);
+  outline: none;
+}
+.cfg-input:focus { border-color: var(--acc); }
+.cfg-input.wide { min-width: 300px; }
+.cfg-btn {
+  height: 32px;
+  padding: 0 16px;
+  background: #4f46e5;
+  color: #fff;
+  border: none;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: 'Geist', sans-serif;
+  white-space: nowrap;
+  transition: background .15s;
+}
+.cfg-btn:hover { background: #4338ca; }
+
+/* ── LAYOUT ─────────────────────────────────────────── */
+.main { padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; }
+.row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* ── CARD ────────────────────────────────────────────── */
+.card {
+  background: #ffffff;
+  border: 1px solid #dde3f8;
+  border-radius: var(--r);
+  padding: 18px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  box-shadow: 0 1px 4px rgba(79,70,229,0.06);
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -.1px;
+}
+
+/* ── CONTROLS ───────────────────────────────────────── */
+.ctrl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.ig {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.ib {
+  width: 30px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  border: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  color: var(--text3);
+  transition: background .12s, color .12s;
+}
+.ib:last-child { border-right: none; }
+.ib:hover { background: var(--surface2); color: var(--text2); }
+.ib.on { background: #4f46e5; color: #fff; }
+.ib svg { width: 13px; height: 13px; pointer-events: none; }
+.gap { flex: 1; min-width: 0; }
+.ml { font-size: 12px; color: var(--text3); }
+.sel {
+  height: 28px;
+  padding: 0 24px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: 'Geist', sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23a8a8a4' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 7px center;
+  outline: none;
+}
+.dt {
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text2);
+  font-family: 'Geist', sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  transition: border-color .12s;
+}
+.dt:hover { border-color: var(--border2); color: var(--text); }
+.dt svg { width: 12px; height: 12px; color: var(--text3); }
+.btn-f {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--surface2);
+  color: var(--text2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: 'Geist', sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.btn-f:hover { background: var(--border); color: var(--text); }
+.btn-f svg { width: 12px; height: 12px; }
+
+/* ── CHART AREA ─────────────────────────────────────── */
+.ca {
+  position: relative;
+  width: 100%;
+}
+.ca canvas { display: none; width: 100% !important; }
+.ca canvas.vis { display: block; }
+.tv { display: none; overflow: auto; max-height: 280px; }
+.tv.vis { display: block; }
+
+/* ── TABLE ──────────────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  text-align: left;
+  padding: 7px 12px;
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+tbody td { padding: 8px 12px; border-bottom: 1px solid var(--bg); }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: var(--surface2); }
+.no-data { text-align: center; color: var(--text3); padding: 32px 0 !important; font-size: 12px; }
+
+/* ── LEGEND ─────────────────────────────────────────── */
+.leg { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
+.li { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text2); }
+.ld { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+
+/* ── BADGES ─────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: 'Geist Mono', monospace;
+  letter-spacing: .02em;
+}
+.bc  { background: var(--crit-lt); color: var(--crit); }
+.bh  { background: var(--high-lt); color: var(--high); }
+.bm  { background: var(--med-lt);  color: var(--med);  }
+.bl  { background: var(--low-lt);  color: var(--low);  }
+
+/* ── MODALS ─────────────────────────────────────────── */
+.overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.15);
+  z-index: 200;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 60px 24px 0;
+}
+.overlay.open { display: flex; }
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: 0 8px 32px rgba(0,0,0,.12);
+  padding: 20px;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.modal h4 { font-size: 13px; font-weight: 600; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.pb {
+  padding: 4px 11px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text2);
+  font-family: 'Geist', sans-serif;
+  transition: all .12s;
+}
+.pb:hover { border-color: var(--border2); color: var(--text); }
+.pb.on { background: var(--text); color: #fff; border-color: var(--text); }
+.custom-range { display: none; flex-direction: column; gap: 8px; }
+.custom-range.show { display: flex; }
+.custom-range label { font-size: 11px; color: var(--text3); font-weight: 500; }
+.custom-range input[type="datetime-local"] {
+  height: 32px; padding: 0 10px; border: 1px solid var(--border);
+  border-radius: var(--r-sm); font-family: 'Geist', sans-serif;
+  font-size: 12px; color: var(--text); background: var(--surface); outline: none;
+}
+.mact { display: flex; gap: 8px; justify-content: flex-end; }
+.ba {
+  padding: 6px 16px;
+  background: #4f46e5;
+  color: #fff;
+  border: none;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: 'Geist', sans-serif;
+  transition: opacity .15s;
+}
+.ba:hover { background: #4338ca; }
+.bc2 {
+  padding: 6px 16px;
+  background: var(--surface);
+  color: var(--text2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: 'Geist', sans-serif;
+}
+.fsec { display: flex; flex-direction: column; gap: 12px; }
+.fsec > div > label {
+  font-size: 11px;
+  color: var(--text3);
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+/* ── STAT FOOTER (success rate text) ───────────────── */
+.stat-foot {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 8px;
+  font-family: 'Geist Mono', monospace;
+}
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <span class="tb-logo">JWT</span>
+  <div class="tb-sep"></div>
+  <span class="tb-title">Abuse Detection — Analytics</span>
+  <div class="tb-gap"></div>
+  <span id="conn-status" class="loading">connecting…</span>
+</div>
+
+<!-- CONFIG BANNER -->
+<div class="cfg-banner" id="cfg-banner">
+  <strong>Backend URL</strong>
+  <input class="cfg-input" id="api-url-input" type="text"
+    placeholder="http://localhost:5000" value="http://localhost:5000"/>
+  <strong>Admin JWT</strong>
+  <input class="cfg-input wide" id="jwt-input" type="text"
+    placeholder="Paste your admin JWT token here"/>
+  <button class="cfg-btn" onclick="connectAndLoad()">Connect</button>
+</div>
+
+<div class="main">
+
+  <!-- CARD 1: API Calls by Token -->
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">API Calls by Token</span>
+      <button class="btn-f" onclick="openFilter()">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 4h12M4 8h8M6 12h4"/></svg>
+        Filters
+      </button>
+    </div>
+    <div class="ctrl">
+      <div class="ig">
+        <button class="ib on" title="Bar" onclick="sv('ac','bar',this)">
+          <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="3" height="6" rx="1"/><rect x="6.5" y="5" width="3" height="10" rx="1"/><rect x="12" y="2" width="3" height="13" rx="1"/></svg>
+        </button>
+        <button class="ib" title="Line" onclick="sv('ac','line',this)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="1,13 5,8 9,10 13,4 15,7"/></svg>
+        </button>
+        <button class="ib" title="Table" onclick="sv('ac','tbl',this)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="14" height="12" rx="1"/><line x1="1" y1="6" x2="15" y2="6"/><line x1="1" y1="10" x2="15" y2="10"/><line x1="6" y1="2" x2="6" y2="14"/></svg>
+        </button>
+      </div>
+      <div class="gap"></div>
+      <button class="dt" onclick="openDate('ac-dl')">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="2" width="14" height="13" rx="2"/><line x1="1" y1="6" x2="15" y2="6"/><line x1="5" y1="1" x2="5" y2="4"/><line x1="11" y1="1" x2="11" y2="4"/></svg>
+        <span id="ac-dl">Last 7 Days</span>
+      </button>
+    </div>
+    <!-- Fixed height with horizontal scroll for long token labels -->
+    <div class="ca" style="height:240px;">
+      <canvas id="ac-cvs" class="vis" style="height:240px;"></canvas>
+      <div class="tv" id="ac-tbl" style="max-height:240px;">
+        <table>
+          <thead><tr><th>Token (truncated)</th><th>Calls</th></tr></thead>
+          <tbody id="ac-tbody"><tr><td colspan="2" class="no-data">Connect to load data</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="row-2">
+
+    <!-- CARD 2: Success/Failure -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Success / Failure Rate</span>
+      </div>
+      <div class="ctrl">
+        <div class="ig">
+          <button class="ib on" title="Donut" onclick="sv('sr','pie',this)">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 8V2M8 8l5 3"/></svg>
+          </button>
+          <button class="ib" title="Bar" onclick="sv('sr','bar',this)">
+            <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="3" height="6" rx="1"/><rect x="6.5" y="5" width="3" height="10" rx="1"/><rect x="12" y="2" width="3" height="13" rx="1"/></svg>
+          </button>
+          <button class="ib" title="Table" onclick="sv('sr','tbl',this)">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="14" height="12" rx="1"/><line x1="1" y1="6" x2="15" y2="6"/><line x1="1" y1="10" x2="15" y2="10"/><line x1="6" y1="2" x2="6" y2="14"/></svg>
+          </button>
+        </div>
+        <div class="gap"></div>
+        <button class="dt" onclick="openDate('sr-dl')">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="2" width="14" height="13" rx="2"/><line x1="1" y1="6" x2="15" y2="6"/><line x1="5" y1="1" x2="5" y2="4"/><line x1="11" y1="1" x2="11" y2="4"/></svg>
+          <span id="sr-dl">Last 7 Days</span>
+        </button>
+      </div>
+      <div class="ca" style="height:220px;">
+        <canvas id="sr-cvs" class="vis" style="height:220px;"></canvas>
+        <div class="tv" id="sr-tbl" style="max-height:220px;">
+          <table><thead><tr><th>Status</th><th>Count</th><th>%</th></tr></thead>
+          <tbody id="sr-tbody"><tr><td colspan="3" class="no-data">—</td></tr></tbody></table>
+        </div>
+      </div>
+      <div id="sr-rate" class="stat-foot"></div>
+    </div>
+
+    <!-- CARD 3: Request Timeline -->
+    <div class="card">
+      <div class="card-head"><span class="card-title">Request Timeline</span></div>
+      <div class="ctrl">
+        <div class="ig">
+          <button class="ib on" title="Line" onclick="sv('rt','line',this)">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="1,13 5,8 9,10 13,4 15,7"/></svg>
+          </button>
+          <button class="ib" title="Bar" onclick="sv('rt','bar',this)">
+            <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="3" height="6" rx="1"/><rect x="6.5" y="5" width="3" height="10" rx="1"/><rect x="12" y="2" width="3" height="13" rx="1"/></svg>
+          </button>
+        </div>
+        <div class="gap"></div>
+        <span class="ml">per</span>
+        <select class="sel" id="rt-per" onchange="loadTimeline()">
+          <option>Hour</option><option selected>Day</option><option>Week</option>
+        </select>
+        <button class="dt" onclick="openDate('rt-dl')">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="2" width="14" height="13" rx="2"/><line x1="1" y1="6" x2="15" y2="6"/><line x1="5" y1="1" x2="5" y2="4"/><line x1="11" y1="1" x2="11" y2="4"/></svg>
+          <span id="rt-dl">Last 7 Days</span>
+        </button>
+      </div>
+      <div class="ca" style="height:220px;">
+        <canvas id="rt-cvs" class="vis" style="height:220px;"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- CARD 4: Alert Type Breakdown -->
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Alert Type Breakdown</span>
+      <button class="btn-f" onclick="openFilter()">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 4h12M4 8h8M6 12h4"/></svg>
+        Filters
+      </button>
+    </div>
+    <div class="ctrl">
+      <div class="ig">
+        <button class="ib on" title="Bar" onclick="sv('at','bar',this)">
+          <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="3" height="6" rx="1"/><rect x="6.5" y="5" width="3" height="10" rx="1"/><rect x="12" y="2" width="3" height="13" rx="1"/></svg>
+        </button>
+        <button class="ib" title="Donut" onclick="sv('at','pie',this)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 8V2M8 8l5 3"/></svg>
+        </button>
+        <button class="ib" title="Table" onclick="sv('at','tbl',this)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="14" height="12" rx="1"/><line x1="1" y1="6" x2="15" y2="6"/><line x1="1" y1="10" x2="15" y2="10"/><line x1="6" y1="2" x2="6" y2="14"/></svg>
+        </button>
+      </div>
+      <div class="gap"></div>
+      <button class="dt" onclick="openDate('at-dl')">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="2" width="14" height="13" rx="2"/><line x1="1" y1="6" x2="15" y2="6"/><line x1="5" y1="1" x2="5" y2="4"/><line x1="11" y1="1" x2="11" y2="4"/></svg>
+        <span id="at-dl">Last 7 Days</span>
+      </button>
+    </div>
+    <div class="ca" style="height:260px;">
+      <canvas id="at-cvs" class="vis" style="height:260px;"></canvas>
+      <div class="tv" id="at-tbl" style="max-height:260px;">
+        <table><thead><tr><th>Alert Type</th><th>Severity</th><th>Count</th></tr></thead>
+        <tbody id="at-tbody"><tr><td colspan="3" class="no-data">—</td></tr></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- CARD 5: Risk Score By User -->
+  <div class="card">
+    <div class="card-head"><span class="card-title">Risk Score by User</span></div>
+    <div class="ctrl">
+      <div class="ig">
+        <button class="ib on" title="Bar" onclick="sv('rs','bar',this)">
+          <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="3" height="6" rx="1"/><rect x="6.5" y="5" width="3" height="10" rx="1"/><rect x="12" y="2" width="3" height="13" rx="1"/></svg>
+        </button>
+        <button class="ib" title="Table" onclick="sv('rs','tbl',this)">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="14" height="12" rx="1"/><line x1="1" y1="6" x2="15" y2="6"/><line x1="1" y1="10" x2="15" y2="10"/><line x1="6" y1="2" x2="6" y2="14"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="ca" style="height:200px;">
+      <canvas id="rs-cvs" class="vis" style="height:200px;"></canvas>
+      <div class="tv" id="rs-tbl" style="max-height:200px;">
+        <table>
+          <thead><tr><th>User</th><th>Score</th><th>Level</th><th>Updated</th></tr></thead>
+          <tbody id="rs-tbody"><tr><td colspan="4" class="no-data">—</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="leg" style="margin-top:12px;">
+      <span class="li"><span class="ld" style="background:var(--crit)"></span>Critical</span>
+      <span class="li"><span class="ld" style="background:var(--high)"></span>High</span>
+      <span class="li"><span class="ld" style="background:var(--med)"></span>Medium</span>
+      <span class="li"><span class="ld" style="background:var(--low)"></span>Low</span>
+    </div>
+  </div>
+
+  <!-- CARD 6: Alert Logs -->
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Recent Alerts Log</span>
+      <button class="btn-f" onclick="openFilter()">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 4h12M4 8h8M6 12h4"/></svg>
+        Filters
+      </button>
+    </div>
+    <div class="ctrl">
+      <div class="gap"></div>
+      <button class="dt" onclick="openDate('lg-dl')">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="2" width="14" height="13" rx="2"/><line x1="1" y1="6" x2="15" y2="6"/><line x1="5" y1="1" x2="5" y2="4"/><line x1="11" y1="1" x2="11" y2="4"/></svg>
+        <span id="lg-dl">Last 7 Days</span>
+      </button>
+    </div>
+    <div class="tv vis" style="max-height:320px;">
+      <table>
+        <thead>
+          <tr><th>Type</th><th>Severity</th><th>Reason</th><th>Action</th><th>Status</th><th>User</th><th>Time</th></tr>
+        </thead>
+        <tbody id="lg-tbody"><tr><td colspan="7" class="no-data">—</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<!-- Date Modal -->
+<div class="overlay" id="dov" onclick="if(event.target===this)closeDM()">
+  <div class="modal">
+    <h4>Date Range</h4>
+    <div class="presets" id="dpresets">
+      <button class="pb" onclick="dp(this,'Last 24 Hours')">Last 24 Hours</button>
+      <button class="pb on" onclick="dp(this,'Last 7 Days')">Last 7 Days</button>
+      <button class="pb" onclick="dp(this,'Last 14 Days')">Last 14 Days</button>
+      <button class="pb" onclick="dp(this,'Last 30 Days')">Last 30 Days</button>
+      <button class="pb" onclick="dp(this,'Last 90 Days')">Last 90 Days</button>
+      <button class="pb" onclick="dp(this,'custom')">Custom</button>
+    </div>
+    <div class="custom-range" id="cr">
+      <label>From</label><input type="datetime-local" id="dfrom"/>
+      <label>To</label><input type="datetime-local" id="dto"/>
+    </div>
+    <div class="mact">
+      <button class="bc2" onclick="closeDM()">Cancel</button>
+      <button class="ba" onclick="applyDM()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- Filter Modal -->
+<div class="overlay" id="fov" onclick="if(event.target===this)closeFM()">
+  <div class="modal" style="width:320px;">
+    <h4>Filters</h4>
+    <div class="fsec">
+      <div>
+        <label>Severity</label>
+        <div class="presets" id="f-severity">
+          <button class="pb" onclick="this.classList.toggle('on')">CRITICAL</button>
+          <button class="pb" onclick="this.classList.toggle('on')">HIGH</button>
+          <button class="pb" onclick="this.classList.toggle('on')">MEDIUM</button>
+          <button class="pb" onclick="this.classList.toggle('on')">LOW</button>
+        </div>
+      </div>
+      <div>
+        <label>Alert Type</label>
+        <div class="presets" id="f-type">
+          <button class="pb" onclick="this.classList.toggle('on')">TOKEN_REPLAY</button>
+          <button class="pb" onclick="this.classList.toggle('on')">RATE_ANOMALY</button>
+          <button class="pb" onclick="this.classList.toggle('on')">API_SCAN</button>
+          <button class="pb" onclick="this.classList.toggle('on')">IP_ANOMALY</button>
+          <button class="pb" onclick="this.classList.toggle('on')">IMPOSSIBLE_TRAVEL</button>
+          <button class="pb" onclick="this.classList.toggle('on')">DEVICE_ANOMALY</button>
+          <button class="pb" onclick="this.classList.toggle('on')">REVOKED_TOKEN_USE</button>
+          <button class="pb" onclick="this.classList.toggle('on')">FORGED_TOKEN</button>
+          <button class="pb" onclick="this.classList.toggle('on')">BEHAVIOR_ANOMALY</button>
+        </div>
+      </div>
+      <div>
+        <label>Status</label>
+        <div class="presets" id="f-resolved">
+          <button class="pb" onclick="this.classList.toggle('on')">Open</button>
+          <button class="pb" onclick="this.classList.toggle('on')">Resolved</button>
+        </div>
+      </div>
+    </div>
+    <div class="mact">
+      <button class="bc2" onclick="closeFM()">Cancel</button>
+      <button class="ba" onclick="applyFiltersAndLoad()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── CONFIG ───────────────────────────────────────────────────────────────────
+let API_BASE  = localStorage.getItem('jwt_api_base')  || 'http://localhost:5000';
+let JWT_TOKEN = localStorage.getItem('jwt_token') || '';
+document.getElementById('api-url-input').value = API_BASE;
+document.getElementById('jwt-input').value     = JWT_TOKEN;
+
+async function apiFetch(path, params = {}) {
+  const url = new URL(API_BASE + '/api/analytics' + path);
+  Object.entries(params).forEach(([k,v]) => v && url.searchParams.set(k, v));
+  const res = await fetch(url.toString(), {
+    headers: { 'Authorization': `Bearer ${JWT_TOKEN}`, 'Content-Type': 'application/json' }
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+async function connectAndLoad() {
+  API_BASE  = document.getElementById('api-url-input').value.trim().replace(/\/$/, '');
+  JWT_TOKEN = document.getElementById('jwt-input').value.trim();
+  localStorage.setItem('jwt_api_base', API_BASE);
+  localStorage.setItem('jwt_token', JWT_TOKEN);
+  const st = document.getElementById('conn-status');
+  st.className = 'loading'; st.textContent = 'connecting…';
+  try {
+    await Promise.all([loadApiCalls(), loadSuccessRate(), loadTimeline(),
+                       loadAlertTypes(), loadRiskScores(), loadAlertLogs()]);
+    st.className = 'ok'; st.textContent = '● live data';
+    document.getElementById('cfg-banner').style.display = 'none';
+  } catch(err) {
+    st.className = 'err'; st.textContent = '✕ ' + err.message;
+    console.error(err);
+  }
+}
+
+function getRangeParam(id) { return document.getElementById(id)?.textContent || 'Last 7 Days'; }
+
+// ── CHART INSTANCE REGISTRY ──────────────────────────────────────────────────
+// Each card has ONE live Chart.js instance. Destroy before recreate = no overlaps.
+const LIVE = {};
+
+function destroyChart(key) {
+  if (LIVE[key]) { LIVE[key].destroy(); LIVE[key] = null; }
+}
+
+// ── COLOUR PALETTE ───────────────────────────────────────────────────────────
+const PRIMARY   = '#4f46e5';
+const SEV_COL   = { CRITICAL:'#dc2626', HIGH:'#ea580c', MEDIUM:'#ca8a04', LOW:'#16a34a' };
+const BADGE_CLS = { CRITICAL:'bc', HIGH:'bh', MEDIUM:'bm', LOW:'bl' };
+
+const ALERT_COL = {
+  TOKEN_REPLAY:        '#4f46e5',
+  RATE_ANOMALY:        '#0891b2',
+  PRIVILEGE_ABUSE:     '#dc2626',
+  DEVICE_ANOMALY:      '#7c3aed',
+  IP_ANOMALY:          '#0f766e',
+  API_SCAN:            '#c2410c',
+  REVOKED_TOKEN_USE:   '#b91c1c',
+  BEHAVIOR_ANOMALY:    '#d97706',
+  IMPOSSIBLE_TRAVEL:   '#db2777',
+  INVALID_TOKEN_FLOOD: '#64748b',
+  TOKEN_LIFETIME_ABUSE:'#059669',
+  LOGIN_TIME_ANOMALY:  '#94a3b8',
+  CONCURRENT_SESSION:  '#6d28d9',
+  FORGED_TOKEN:        '#1e1b4b',
+};
+
+// ── BASE CHART OPTIONS ───────────────────────────────────────────────────────
+function baseOpts(extraX = {}) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 220 },
+    plugins: { legend: { display: false } },
+    scales: {
+      x: {
+        grid: { display: false },
+        border: { display: false },
+        ticks: {
+          font: { family: 'Geist', size: 11 },
+          color: '#8b87c0',
+          maxRotation: 40,
+          autoSkip: true,
+          maxTicksLimit: 12,
+          ...extraX,
+        }
+      },
+      y: {
+        grid: { color: '#e8e8f8', lineWidth: 1 },
+        border: { display: false },
+        ticks: { font: { family: 'Geist', size: 11 }, color: '#8b87c0' }
+      }
+    }
+  };
+}
+
+// Rebuild canvas element — clean slate, no residual Chart.js state
+function freshCanvas(id) {
+  const old = document.getElementById(id);
+  const parent = old.parentNode;
+  const neo = document.createElement('canvas');
+  neo.id = id;
+  neo.className = 'vis';
+  neo.style.height = old.style.height || '';
+  parent.replaceChild(neo, old);
+  return neo;
+}
+
+// ── CARD 1 — API Calls by Token ──────────────────────────────────────────────
+// card state: which view is active
+const cardState = { ac: 'bar', sr: 'pie', rt: 'line', at: 'bar', rs: 'bar' };
+let acData = null, srData = null, rtData = null, atData = null, rsData = null;
+
+async function loadApiCalls() {
+  acData = await apiFetch('/api-calls', { range: getRangeParam('ac-dl') });
+  renderAC();
+}
+function renderAC() {
+  if (!acData) return;
+  const view = cardState.ac;
+  const tbl  = document.getElementById('ac-tbl');
+  const cvs  = document.getElementById('ac-cvs');
+
+  if (view === 'tbl') {
+    cvs.style.display = 'none'; tbl.classList.add('vis');
+    const tbody = document.getElementById('ac-tbody');
+    tbody.innerHTML = acData.raw?.length
+      ? acData.raw.map(r=>`<tr>
+          <td><span style="font-family:'Geist Mono',monospace;font-size:11px;color:#4c4885">${r.token}…</span></td>
+          <td style="font-weight:500">${r.count}</td></tr>`).join('')
+      : '<tr><td colspan="2" class="no-data">No data</td></tr>';
+    return;
+  }
+  tbl.classList.remove('vis'); cvs.style.display = 'block';
+  destroyChart('ac');
+  const c = freshCanvas('ac-cvs');
+  const shortLabels = acData.labels.map(l => l.length > 10 ? l.slice(0,8)+'…' : l);
+  const opts = baseOpts({ font: { family:'Geist Mono', size:10 }, maxTicksLimit: 18 });
+  opts.plugins.tooltip = { callbacks: { title: ctx => acData.labels[ctx[0].dataIndex] } };
+  LIVE.ac = new Chart(c, {
+    type: view,
+    data: { labels: shortLabels, datasets: [{
+      data: acData.values,
+      backgroundColor: view==='line' ? PRIMARY+'18' : PRIMARY+'cc',
+      borderColor: PRIMARY, borderWidth: view==='line' ? 2 : 0,
+      borderRadius: view==='bar' ? 4 : 0,
+      fill: view==='line', tension: 0.38,
+      pointRadius: view==='line' ? 3 : 0, pointBackgroundColor: PRIMARY,
+    }]},
+    options: opts
+  });
+}
+
+// ── CARD 2 — Success / Failure ────────────────────────────────────────────────
+async function loadSuccessRate() {
+  srData = await apiFetch('/success-rate', { range: getRangeParam('sr-dl') });
+  renderSR();
+}
+function renderSR() {
+  if (!srData) return;
+  const view = cardState.sr;
+  const tbl  = document.getElementById('sr-tbl');
+  const cvs  = document.getElementById('sr-cvs');
+
+  if (view === 'tbl') {
+    cvs.style.display = 'none'; tbl.classList.add('vis');
+    const total = srData.values.reduce((a,b)=>a+b,0);
+    document.getElementById('sr-tbody').innerHTML = srData.labels.map((l,i)=>
+      `<tr><td>${l}</td><td>${srData.values[i]}</td><td>${total?((srData.values[i]/total)*100).toFixed(1)+'%':'—'}</td></tr>`
+    ).join('') || '<tr><td colspan="3" class="no-data">No data</td></tr>';
+    document.getElementById('sr-rate').textContent = `${srData.rate}% success rate · ${srData.total?.toLocaleString()} total requests`;
+    return;
+  }
+  tbl.classList.remove('vis'); cvs.style.display = 'block';
+  destroyChart('sr');
+  const c = freshCanvas('sr-cvs');
+  const colors = [PRIMARY, '#dc2626'];
+
+  if (view === 'pie') {
+    LIVE.sr = new Chart(c, {
+      type: 'doughnut',
+      data: { labels: srData.labels, datasets: [{ data: srData.values, backgroundColor: colors, borderWidth: 3, borderColor: '#fff', hoverBorderColor:'#fff' }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '65%', animation: { duration: 220 },
+        plugins: { legend: { display: true, position: 'right', labels: { font: { family:'Geist', size:12 }, color:'#4c4885', boxWidth:10, boxHeight:10, padding:14 } } }
+      }
+    });
+  } else {
+    LIVE.sr = new Chart(c, {
+      type: 'bar',
+      data: { labels: srData.labels, datasets: [{ data: srData.values, backgroundColor: colors, borderWidth: 0, borderRadius: 5 }] },
+      options: baseOpts()
+    });
+  }
+  document.getElementById('sr-rate').textContent = `${srData.rate}% success rate · ${srData.total?.toLocaleString()} total requests`;
+}
+
+// ── CARD 3 — Request Timeline ─────────────────────────────────────────────────
+async function loadTimeline() {
+  const per = document.getElementById('rt-per')?.value || 'Day';
+  rtData = await apiFetch('/timeline', { range: getRangeParam('rt-dl'), per });
+  renderRT();
+}
+function renderRT() {
+  if (!rtData) return;
+  const view = cardState.rt;
+  destroyChart('rt');
+  const c = freshCanvas('rt-cvs');
+  c.style.display = 'block';
+  // For timeline: if many date labels, skip aggressively + rotate
+  const opts = baseOpts({ maxRotation: 35, maxTicksLimit: 10 });
+  LIVE.rt = new Chart(c, {
+    type: view,
+    data: { labels: rtData.labels, datasets: [{
+      data: rtData.values,
+      backgroundColor: view==='line' ? PRIMARY+'18' : PRIMARY+'bb',
+      borderColor: PRIMARY, borderWidth: view==='line' ? 2 : 0,
+      borderRadius: view==='bar' ? 4 : 0,
+      fill: view==='line', tension: 0.38,
+      pointRadius: view==='line' ? 3 : 0, pointBackgroundColor: PRIMARY,
+    }]},
+    options: opts
+  });
+}
+
+// ── CARD 4 — Alert Type Breakdown ────────────────────────────────────────────
+async function loadAlertTypes() {
+  const severities = [...document.querySelectorAll('#f-severity .pb.on')].map(b=>b.textContent).join(',');
+  atData = await apiFetch('/alert-types', { range: getRangeParam('at-dl'), severity: severities||undefined });
+  renderAT();
+}
+function renderAT() {
+  if (!atData) return;
+  const view   = cardState.at;
+  const tbl    = document.getElementById('at-tbl');
+  const cvs    = document.getElementById('at-cvs');
+  const colors = atData.labels.map(l => ALERT_COL[l] || '#64748b');
+
+  if (view === 'tbl') {
+    cvs.style.display = 'none'; tbl.classList.add('vis');
+    document.getElementById('at-tbody').innerHTML = atData.raw?.length
+      ? atData.raw.map(r=>`<tr>
+          <td><span style="font-family:'Geist Mono',monospace;font-size:11px">${r.type}</span></td>
+          <td><span class="badge ${BADGE_CLS[r.severity]||'bl'}">${r.severity}</span></td>
+          <td style="font-weight:500">${r.count}</td></tr>`).join('')
+      : '<tr><td colspan="3" class="no-data">No alerts</td></tr>';
+    return;
+  }
+  tbl.classList.remove('vis'); cvs.style.display = 'block';
+  destroyChart('at');
+  const c = freshCanvas('at-cvs');
+
+  if (view === 'pie') {
+    LIVE.at = new Chart(c, {
+      type: 'doughnut',
+      data: { labels: atData.labels, datasets: [{ data: atData.values, backgroundColor: colors, borderWidth: 3, borderColor:'#fff', hoverBorderColor:'#fff' }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '60%', animation: { duration: 220 },
+        plugins: { legend: { display: true, position: 'right', labels: { font: { family:'Geist Mono', size: 10.5 }, color:'#4c4885', boxWidth:10, boxHeight:10, padding:10 } } }
+      }
+    });
+  } else {
+    // Bar: labels are long alert type names — rotate them cleanly
+    const opts = baseOpts({ font: { family:'Geist Mono', size:9.5 }, maxRotation: 45, maxTicksLimit: 20 });
+    opts.layout = { padding: { bottom: 10 } };
+    LIVE.at = new Chart(c, {
+      type: 'bar',
+      data: { labels: atData.labels, datasets: [{ data: atData.values, backgroundColor: colors, borderWidth: 0, borderRadius: 5 }] },
+      options: opts
+    });
+  }
+}
+
+// ── CARD 5 — Risk Scores ──────────────────────────────────────────────────────
+async function loadRiskScores() {
+  rsData = await apiFetch('/risk-scores');
+  renderRS();
+}
+function renderRS() {
+  if (!rsData) return;
+  const view = cardState.rs;
+  const tbl  = document.getElementById('rs-tbl');
+  const cvs  = document.getElementById('rs-cvs');
+  const colors = rsData.levels.map(l => SEV_COL[l] || '#64748b');
+
+  if (view === 'tbl') {
+    cvs.style.display = 'none'; tbl.classList.add('vis');
+    document.getElementById('rs-tbody').innerHTML = rsData.raw?.length
+      ? rsData.raw.map(r=>`<tr>
+          <td style="font-family:'Geist Mono',monospace;font-size:11.5px">${r.email}</td>
+          <td style="font-weight:600">${r.score}</td>
+          <td><span class="badge ${BADGE_CLS[r.level]||'bl'}">${r.level}</span></td>
+          <td style="color:#8b87c0;font-size:12px">${new Date(r.lastUpdated).toLocaleString()}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="no-data">No risk data</td></tr>';
+    return;
+  }
+  tbl.classList.remove('vis'); cvs.style.display = 'block';
+  destroyChart('rs');
+  const c = freshCanvas('rs-cvs');
+  LIVE.rs = new Chart(c, {
+    type: 'bar',
+    data: { labels: rsData.labels, datasets: [{ data: rsData.values, backgroundColor: colors, borderWidth: 0, borderRadius: 5 }] },
+    options: baseOpts({ font: { family:'Geist Mono', size:10.5 }, maxRotation: 30 })
+  });
+}
+
+// ── CARD 6 — Alert Logs ───────────────────────────────────────────────────────
+async function loadAlertLogs() {
+  const types      = [...document.querySelectorAll('#f-type .pb.on')].map(b=>b.textContent).join(',');
+  const severities = [...document.querySelectorAll('#f-severity .pb.on')].map(b=>b.textContent).join(',');
+  const data = await apiFetch('/alert-logs', {
+    range: getRangeParam('lg-dl'), type: types||undefined, severity: severities||undefined
+  });
+  const tbody = document.getElementById('lg-tbody');
+  tbody.innerHTML = data.rows?.length
+    ? data.rows.map(r=>`<tr>
+        <td><span style="font-family:'Geist Mono',monospace;font-size:10.5px">${r.type}</span></td>
+        <td><span class="badge ${BADGE_CLS[r.severity]||'bl'}">${r.severity}</span></td>
+        <td style="color:#4c4885;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px">${r.reason}</td>
+        <td style="font-size:12px">${r.actionTaken}</td>
+        <td style="font-size:13px">${r.isResolved ? '✓' : '○'}</td>
+        <td style="color:#8b87c0;font-size:12px">${r.user}</td>
+        <td style="color:#8b87c0;font-size:11.5px;white-space:nowrap">${new Date(r.time).toLocaleString()}</td></tr>`).join('')
+    : '<tr><td colspan="7" class="no-data">No alerts in range</td></tr>';
+}
+
+// ── VIEW SWITCHING ────────────────────────────────────────────────────────────
+// Each card has one canvas + optionally one table. State tracked in cardState{}.
+const CARD_RENDER = { ac: renderAC, sr: renderSR, rt: renderRT, at: renderAT, rs: renderRS };
+
+function sv(card, type, btn) {
+  btn.closest('.ig').querySelectorAll('.ib').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  cardState[card] = type;
+  // Hide table for all (render fns re-show as needed)
+  const tables = { ac:'ac-tbl', sr:'sr-tbl', at:'at-tbl', rs:'rs-tbl' };
+  if (tables[card]) document.getElementById(tables[card])?.classList.remove('vis');
+  CARD_RENDER[card]?.();
+}
+
+// ── DATE MODAL ────────────────────────────────────────────────────────────────
+let _dlTarget=null, _preset='Last 7 Days';
+function openDate(labelId) {
+  _dlTarget = labelId; _preset = document.getElementById(labelId).textContent;
+  document.querySelectorAll('#dpresets .pb').forEach(b=>b.classList.toggle('on', b.textContent.trim()===_preset));
+  document.getElementById('cr').classList.toggle('show', _preset==='custom');
+  document.getElementById('dov').classList.add('open');
+}
+function closeDM() { document.getElementById('dov').classList.remove('open'); }
+function dp(btn,label) {
+  document.querySelectorAll('#dpresets .pb').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on'); _preset=label;
+  document.getElementById('cr').classList.toggle('show', label==='custom');
+}
+function applyDM() {
+  if (!_dlTarget) { closeDM(); return; }
+  let label = _preset;
+  if (_preset==='custom') {
+    const f=document.getElementById('dfrom').value, t=document.getElementById('dto').value;
+    label=(f&&t)?`${f.slice(0,10)} → ${t.slice(0,10)}`:'Custom';
+  }
+  document.getElementById(_dlTarget).textContent = label;
+  closeDM();
+  if (_dlTarget.startsWith('ac')) loadApiCalls();
+  if (_dlTarget.startsWith('sr')) loadSuccessRate();
+  if (_dlTarget.startsWith('rt')) loadTimeline();
+  if (_dlTarget.startsWith('at')) loadAlertTypes();
+  if (_dlTarget.startsWith('lg')) loadAlertLogs();
+}
+
+// ── FILTER MODAL ──────────────────────────────────────────────────────────────
+function openFilter() { document.getElementById('fov').classList.add('open'); }
+function closeFM()    { document.getElementById('fov').classList.remove('open'); }
+function applyFiltersAndLoad() { closeFM(); loadAlertTypes(); loadAlertLogs(); }
+</script>
+</body>
+</html>
